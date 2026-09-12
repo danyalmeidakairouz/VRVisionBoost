@@ -58,6 +58,19 @@ namespace VRVisionBoost
         private bool _ready;
         private float _nextAttachAttempt;
 
+        // Adding a component is a structural change: it moves the entity to a different chunk
+        // and invalidates the raw component pointers the scan loop is holding. Collect during
+        // the scan, apply after it.
+        private readonly List<Entity> _needFlightTag = new List<Entity>();
+
+        // Exactly the entities THIS plugin tagged, keyed by packed (Index, Version) so a
+        // recycled entity id cannot be mistaken for one we tagged. Removal is driven from this
+        // set and never from a query: a few prefabs ship with VisibleFromFlight of their own
+        // (the Manticore variants), and stripping it from those would break the base game.
+        private readonly Dictionary<ulong, Entity> _taggedByUs = new Dictionary<ulong, Entity>();
+        private ComponentType _flightTagType;
+        private bool _flightTagUsable;
+
         /// <summary>
         /// Hideable.IgnoreLoS / AdditionalHideRangeSq and CheckOnScreen.IgnoreLineOfSight /
         /// MaxDistanceForHudAndFadeOut and Vision.Range are INPUTS to the game's systems: they are
@@ -99,13 +112,14 @@ namespace VRVisionBoost
             // KeepModelsLoaded is deliberately NOT here: TimeSinceLastSeen is a timer the game
             // advances and this plugin never Captures it, so there is nothing to undo and
             // toggling it should not trigger a teardown.
-            public readonly bool RevealAll, SeeThroughWalls;
+            public readonly bool RevealAll, SeeThroughWalls, FlightTag;
             public readonly float VisionRange, HudDistance, ModelShowRange;
 
             public Applied(Settings c)
             {
                 RevealAll = c.RevealAllUnits.Value;
                 SeeThroughWalls = c.SeeThroughWalls.Value;
+                FlightTag = c.VisibleFromFlight.Value;
                 VisionRange = c.VisionRange.Value;
                 HudDistance = c.HudDistance.Value;
                 ModelShowRange = c.ModelShowRange.Value;
@@ -113,6 +127,7 @@ namespace VRVisionBoost
 
             public bool Equals(Applied o) =>
                 RevealAll == o.RevealAll && SeeThroughWalls == o.SeeThroughWalls
+                && FlightTag == o.FlightTag
                 && VisionRange.Equals(o.VisionRange) && HudDistance.Equals(o.HudDistance)
                 && ModelShowRange.Equals(o.ModelShowRange);
         }
@@ -156,13 +171,40 @@ namespace VRVisionBoost
         {
             RestoreModelShowRange();
             _haveApplied = false;   // reset on every exit path below, not just the last one
-            if (_originals.Count == 0) return;
+            if (_originals.Count == 0 && _taggedByUs.Count == 0) return;
             if (_client == null || !_client.IsCreated || !_ready)
             {
                 _originals.Clear();
+                _taggedByUs.Clear();
                 return;
             }
-            RestoreOriginals(_client.EntityManager);
+            var em = _client.EntityManager;
+            RestoreOriginals(em);
+            RemoveFlightTags(em);
+        }
+
+        /// <summary>
+        /// Take back exactly the tags this plugin added. Driven from <c>_taggedByUs</c> and never
+        /// from a query over the component, because some prefabs carry it natively and removing
+        /// it from those would change base-game behaviour.
+        /// </summary>
+        private void RemoveFlightTags(EntityManager em)
+        {
+            int removed = 0;
+            foreach (var kv in _taggedByUs)
+            {
+                try
+                {
+                    var e = kv.Value;
+                    if (!em.Exists(e)) continue;              // version-checked: recycled ids fail
+                    if (!em.HasComponent(e, _flightTagType)) continue;
+                    em.RemoveComponent(e, _flightTagType);
+                    removed++;
+                }
+                catch { /* entity went away mid-revert; nothing to undo */ }
+            }
+            _taggedByUs.Clear();
+            if (removed > 0) _log.LogInfo($"Removed VisibleFromFlight from {removed} units.");
         }
 
         // ---- world access ---------------------------------------------------------
@@ -247,11 +289,13 @@ namespace VRVisionBoost
             // a stranger. Drop the bookkeeping WITHOUT restoring - those entities do not exist to
             // restore. Nothing leaks: the only effect that outlives a world is the ModelShowRange
             // static, which is process-wide state handled separately.
-            if (!previousWorldAlive && _originals.Count > 0)
+            if (!previousWorldAlive && (_originals.Count > 0 || _taggedByUs.Count > 0))
             {
                 _log.LogInfo($"Discarding revert state from the previous world "
-                           + $"({_originals.Count} entities) - those entities no longer exist.");
+                           + $"({_originals.Count} entities, {_taggedByUs.Count} flight tags) - "
+                           + "those entities no longer exist.");
                 _originals.Clear();
+                _taggedByUs.Clear();
                 _originalsCapped = false;
             }
             _haveApplied = false;   // re-apply from scratch against whatever we just bound
@@ -260,6 +304,20 @@ namespace VRVisionBoost
             // failure, and must not be reported as one nor leave _ready set from a lie.
             VerifyLayouts();
             _bloodUsable = VerifyLayout<BloodConsumeSource>();
+
+            // Resolve the flight tag once. Doing it per entity would turn one bad type lookup
+            // into an exception on every entity of every scan, killing the whole Tick.
+            try
+            {
+                _flightTagType = new ComponentType(Il2CppType.Of<VisibleFromFlight>());
+                _flightTagUsable = true;
+            }
+            catch (Exception e)
+            {
+                _flightTagUsable = false;
+                _log.LogError("ProjectM.VisibleFromFlight is unavailable, so units will stay "
+                            + $"hidden while you fly (everything else still works): {e.Message}");
+            }
             return true;
         }
 
@@ -585,6 +643,7 @@ namespace VRVisionBoost
             if (_haveApplied && !want.Equals(_applied))
             {
                 RestoreOriginals(em);
+                RemoveFlightTags(em);
                 // Only when its own value moved: ApplyModelShowRange below would just set it
                 // straight back, and bouncing a process-wide static off and on - with a log line
                 // each way - for an unrelated setting is noise, not safety.
@@ -613,7 +672,12 @@ namespace VRVisionBoost
             bool keepModels = _cfg.KeepModelsLoaded.Value;   // not snapshotted; nothing to undo
             bool los = want.SeeThroughWalls;
 
+            // No separate "VisibleFromFlight was switched off" unwind here: the snapshot check
+            // above already removed the tags before we got this far.
+            bool flightTag = want.FlightTag && _flightTagUsable;
+
             int seen = 0, revealed = 0;
+            _needFlightTag.Clear();
             var ents = _hideableQuery.ToEntityArray(Allocator.Temp);
             try
             {
@@ -646,6 +710,12 @@ namespace VRVisionBoost
                         if (Write(em, e, h)) revealed++;
                     }
 
+                    // While you fly, VisibilitySystem_Client keeps only entities carrying this tag
+                    // visible - measured, a unit 7m below with no tag was still hidden. Queued,
+                    // not added here: a structural change mid-scan would invalidate the raw
+                    // component pointers this loop is using.
+                    if (flightTag && !em.HasComponent(e, _flightTagType)) _needFlightTag.Add(e);
+
                     // A revealed unit still renders as nothing if its model was unloaded.
                     if (keepModels && Has<HybridModelUser>(em, e))
                     {
@@ -672,20 +742,62 @@ namespace VRVisionBoost
             }
             finally { ents.Dispose(); }
 
+            int tagged = AddFlightTags(em);
+
             if (_reportPending)
             {
                 _reportPending = false;
                 _log.LogInfo($"Boosting {seen} hideable units in the client world; {revealed} were "
                            + $"hidden and have been revealed. VisionRange={range}m keepRange={keep}m"
+                           + (flightTag ? $" flightTagsAdded={tagged}" : " flightTag=OFF (units will"
+                                                                       + " stay hidden while flying)")
                            + (hud > 0f ? $" hud={hud}m" : ""));
                 if (_writesDisabled)
                     _log.LogError("...but writes are DISABLED, so nothing above was actually "
-                                + "applied to Hideable/Vision/CheckOnScreen.");
+                                + "applied to Hideable/Vision/CheckOnScreen. Only the flight tag "
+                                + "(which writes no struct data) took effect.");
                 if (seen == 0)
                     _log.LogInfo("Nothing to reveal - no units are being streamed to you right "
                                + "now. That is the server's call, not this plugin's. Press the "
                                + "dump key to confirm.");
             }
+        }
+
+        /// <summary>
+        /// Apply the queued VisibleFromFlight tags. Structural changes happen in one pass after
+        /// the scan, and only for entities that lack the tag, so steady state costs nothing.
+        ///
+        /// Deliberately NOT gated on <c>_writesDisabled</c>. That flag guards struct marshalling,
+        /// and the risk it protects against is writing the wrong number of bytes into chunk
+        /// memory. VisibleFromFlight is a zero-field tag: adding it marshals nothing, so a size
+        /// disagreement cannot make it unsafe. <see cref="Revert"/> still removes it cleanly.
+        /// </summary>
+        private int AddFlightTags(EntityManager em)
+        {
+            if (_needFlightTag.Count == 0) return 0;
+            int added = 0;
+            bool reported = false;
+            for (int i = 0; i < _needFlightTag.Count; i++)
+            {
+                var e = _needFlightTag[i];
+                try
+                {
+                    if (!em.Exists(e)) continue;   // version-checked; covers death during the scan
+                    em.AddComponent(e, _flightTagType);
+                    _taggedByUs[Key(e)] = e;       // remember, so Revert() undoes exactly this
+                    added++;
+                }
+                catch (Exception ex)
+                {
+                    if (!reported)
+                    {
+                        reported = true;           // one line per tick, not one per entity
+                        _log.LogError($"Could not add VisibleFromFlight: {ex.Message}");
+                    }
+                }
+            }
+            _needFlightTag.Clear();
+            return added;
         }
 
         /// <summary>
@@ -811,6 +923,12 @@ namespace VRVisionBoost
                     _log.LogInfo($"  CHAR [{e.Index}:{e.Version}] dist={d:0.0}m flat={flat:0.0}m "
                                + $"dy={dy:+0.0;-0.0;0.0}m hp={hp.Value:0}/{hp.MaxHealth._Value:0}"
                                + (Has<Hideable>(em, e) ? $" hidden={Read<Hideable>(em, e).IsHidden}" : "")
+                               // Whether this unit can be seen while you fly. A dump full of
+                               // hidden=True NO-FLIGHT-TAG taken airborne is the signature of
+                               // VisibleFromFlight being off, not of a distance problem.
+                               + (_flightTagUsable
+                                  ? (em.HasComponent(e, _flightTagType) ? " +flightTag" : " NO-FLIGHT-TAG")
+                                  : "")
                                + BloodInfo(em, e) + GlowInfo(em, e) + TypeInfo(em, e));
 
                     // Stand next to something and press the dump key to find out what it is,

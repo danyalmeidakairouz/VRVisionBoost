@@ -163,11 +163,27 @@ everything immediately — no rebuild, no restart.
 | `RevealAllUnits` | `true` | Un-hide mobs, VBloods and critters. The plugin's actual purpose. |
 | `SeeThroughWalls` | `false` | Drop the line-of-sight test (`Hideable.IgnoreLoS`) so units stay visible through walls and terrain. Kept separate from distance and off by default. |
 | `HudDistance` | `0` | Also raise the HUD/fade-out distance so nameplates and health bars do not cut off early. `0` leaves the HUD alone. Defaults to 20 m in game. |
+| `VisibleFromFlight` | `true` | **Required to see anything in bat form.** Tags revealed units with the game's own `VisibleFromFlight` component. See below. |
 | `KeepModelsLoaded` | `false` | Keep revealed units' visual models from being unloaded (see below). Costs memory. |
 | `ModelShowRange` | `0` | `0` = leave alone. Radius in meters inside which unit models are instantiated at all. Try 80-150 if revealed units stay invisible at distance. |
 | `DumpComponentsRange` | `3` | On F10, also print the full component list of every unit within this many meters. `0` disables it. Keep it small — each unit prints well over a hundred names. |
 
 Hotkeys are `ToggleKey`, `GlowToggleKey`, `DumpKey` and `ReloadKey` in `[1. General]`.
+
+### Flying is a separate gate from distance
+
+`VisibilitySystem_Client` takes a flying flag for the viewer and reads a
+`ProjectM.VisibleFromFlight` tag on each target. **While you fly, an entity without that tag is
+hidden at any distance** — measured in bat form, a unit 7 m horizontally below read `hidden=True`
+while 69 units were streamed and the farthest sat at 129 m. Widening the distance check does
+nothing against this; it is a different condition entirely.
+
+Almost nothing carries the tag natively (only the Manticore variants do), so `VisibleFromFlight`
+adds the game's own tag to the units the plugin reveals, and removes exactly those again when you
+toggle off. It is not a wallhack — line of sight and stealth are still evaluated normally.
+
+The F10 dump prints `+flightTag` or `NO-FLIGHT-TAG` per unit. A dump taken airborne that is all
+`hidden=True NO-FLIGHT-TAG` means this setting is off, not that something is out of range.
 
 ## Blood glow
 

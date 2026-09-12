@@ -25,6 +25,7 @@ namespace VRVisionBoost
         public ConfigEntry<bool> RevealAllUnits;
         public ConfigEntry<bool> SeeThroughWalls;
         public ConfigEntry<float> HudDistance;
+        public ConfigEntry<bool> VisibleFromFlight;
 
         public ConfigEntry<bool> KeepModelsLoaded;
         public ConfigEntry<float> ModelShowRange;
@@ -68,6 +69,8 @@ namespace VRVisionBoost
                 "Off, the plugin widens the distance check only and lets the game run its normal line-of-sight test, so you see units further away but not through anything. On, it sets Hideable.IgnoreLoS so they stay visible through walls, rocks and terrain. On also means fighting the game over IsHidden every tick, which is why it is not the default.");
             HudDistance = cfg.Bind("2. Vision", "HudDistance", 0f,
                 "Also raise CheckOnScreen.MaxDistanceForHudAndFadeOut to this many meters so health bars / nameplates and the distance fade-out do not cut off before the unit itself does. Defaults to 20 in game. 0 = leave the HUD alone.");
+            VisibleFromFlight = cfg.Bind("2. Vision", "VisibleFromFlight", true,
+                "Keep units visible while you are FLYING, and without this the rest of the vision boost does nothing in bat form. VisibilitySystem_Client takes a flying flag for the viewer and reads a ProjectM.VisibleFromFlight tag on each target: while you fly, an entity WITHOUT that tag is hidden at any distance - measured, a unit 7m below was still hidden=True. Almost no unit ships with the tag (only the Manticore variants do), so the plugin adds the game's own tag to the units it reveals and removes exactly those again on toggle-off. Not a wallhack: line of sight and stealth are still evaluated normally.");
 
             KeepModelsLoaded = cfg.Bind("3. Models", "KeepModelsLoaded", false,
                 "Second gate, separate from hiding: a unit's visual model (HybridModelUser) is unloaded after it has not been seen for a while, so an un-hidden unit can still render as nothing until its model streams back in. This keeps TimeSinceLastSeen pinned at 0 for the entities being revealed. Costs memory and asset streaming. Off by default - turn it on only if the dump shows a revealed unit with a rising lastSeen and no model.");
