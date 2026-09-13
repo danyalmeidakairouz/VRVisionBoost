@@ -11,8 +11,8 @@ A BepInEx 6 (IL2CPP) client plugin for V Rising that does four independent thing
 3. **Clears the fog and clouds in bat form.** Flying is normally a view of grey soup; this
    switches off the game's own `BatFormFog` screen effect and, optionally, the cloud cover
    underneath it, so you can see the ground you are flying over.
-4. **Makes world chests glow.** Tints world chests by type so a gold one stands out from the
-   surrounding clutter — and, by default, only while it still has loot in it.
+4. **Makes world chests glow.** Tints world chests by type, so a gold one in the open is
+   findable from the air — and, by default, only while it still has loot in it.
 
 The four features are separate and separately toggled. None synthesizes input: the plugin only
 reads and writes ECS component and render state, and reads key state.
@@ -345,20 +345,22 @@ Everything the static and renderer routes write is captured before the first wri
 on rescan, on F9 off, on F6 off and on shutdown. The sequencer route self-reverts by definition:
 ceasing to emit *is* the revert.
 
-### You cannot spot them through a roof
+### Spotting them from bat form
 
-The glow tints the chest's own geometry, so it makes a chest that **is** being drawn obvious. It
-cannot make one that is not being drawn appear. Three things stop it, and none is fixable by
-tinting harder:
+**A chest standing in the open is visible from bat form** — confirmed in play. Fly over a camp and
+the gold reads against the ground.
 
-- **Occlusion.** A tent or roof in front of the chest is opaque geometry and wins the depth test.
-- **Culling.** Those children carry `PerInstanceCullingTag`; a small object at altitude is culled
-  or LOD'd out before distance alone would hide it.
-- **Streaming.** Chests stop arriving at roughly 70–75 m, measured — shorter than the ~90 m for
-  units. Nothing client-side exceeds that.
+Two things still bound it, and neither is fixable by tinting harder:
 
-`SeeThroughWalls` does **not** help here. It writes `Hideable.IgnoreLoS`, and world chests carry
-no `Hideable` at all; it also only stops the game *hiding* things, it never makes geometry
+- **Cover.** The glow tints the chest's own geometry, so a tent or roof in front of it is opaque
+  and wins the depth test. That is intended behaviour rather than a defect to work around — a
+  glow that punched through terrain would be a wallhack, which is outside what this plugin does.
+- **Streaming.** Chests stop arriving at roughly 70–75 m, measured from live dumps — shorter than
+  the ~90 m for units. Nothing client-side exceeds that, so this is "spot the camp you are flying
+  over", not "find chests across the valley".
+
+`SeeThroughWalls` changes none of this. It writes `Hideable.IgnoreLoS`, and world chests carry no
+`Hideable` at all; it also only stops the game *hiding* things, and never makes geometry
 transparent.
 
 ### Reading the log
@@ -422,8 +424,8 @@ rising `lastSeen` and an empty `model=`. The dump reports both, so you can check
   (`Unity.Entities.Disabled`), no plain query selects it and neither the reveal nor the glow can
   reach it. The dump lists these separately so they are not mistaken for "never streamed".
 - **A glowing chest still has to be drawn to be seen.** The tint colours the chest's own
-  geometry, so a roof in front of it, distance culling, or the ~70–75 m streaming limit will all
-  hide it regardless. See "You cannot spot them through a roof" above.
+  geometry, so cover in front of it or the ~70–75 m streaming limit will hide it regardless. A
+  chest in the open is visible from bat form. See "Spotting them from bat form" above.
 - **Not every container is tintable.** Containers are drawn three different ways and each route
   reaches one of them; widen `ChestNameContains` and some will light up while others do not. F10
   shows `children=N/M` and the log names the route that reached each one.
