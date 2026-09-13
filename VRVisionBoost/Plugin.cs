@@ -14,7 +14,7 @@ namespace VRVisionBoost
         // The GUID determines the config filename. Changing it orphans the existing config.
         public const string GUID = "vrvisionboost";
         public const string NAME = "VRVisionBoost";
-        public const string VERSION = "1.0.3";
+        public const string VERSION = "1.0.4";
 
         internal static ManualLogSource Logger;
         internal static Settings Cfg;

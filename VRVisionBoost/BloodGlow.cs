@@ -74,6 +74,7 @@ namespace VRVisionBoost
         // _lastDrops keeps the log silent while nothing changes.
         private int _dropNoGameObject, _dropNoRendererComp, _dropNoRenderers, _dropApplyThrew;
         private int _dropRukhanka;
+        private int _dropSelectThrew;
         private int _paintedRenderers;
         private int _emitOk, _emitDead, _emitThrewHybrid, _emitThrewDots;
         private string _lastDrops = "";
@@ -144,10 +145,17 @@ namespace VRVisionBoost
                 for (int i = 0; i < ents.Length; i++)
                 {
                     var e = ents[i];
-                    float pct;
-                    try { pct = Percent(Read<BloodConsumeSource>(em, e).BloodQuality); }
-                    catch { continue; }
-                    Select(em, e, pct, hiMin, perfectMin, hiColor, perfectColor, intensity);
+                    // Select() is INSIDE the try. It used to sit after it, so a throw from it -
+                    // it reads HybridModelUser - escaped Rescan entirely and skipped
+                    // ApplyRenderers() and ReportDrops(), the same failure the
+                    // GlowUseBloodComponent early return caused, through a different door. One
+                    // unlucky entity would silently cost the whole scan.
+                    try
+                    {
+                        float pct = Percent(Read<BloodConsumeSource>(em, e).BloodQuality);
+                        Select(em, e, pct, hiMin, perfectMin, hiColor, perfectColor, intensity);
+                    }
+                    catch { _dropSelectThrew++; }
                 }
             }
             finally { ents.Dispose(); }
@@ -156,25 +164,31 @@ namespace VRVisionBoost
             // carrying no BloodConsumeSource at all, so a query over that component alone can
             // never see them. Skip anything already covered above, and skip players - they carry
             // Blood too, and lighting up your own character is not the feature.
-            if (!_cfg.GlowUseBloodComponent.Value) return;
-            var ents2 = _bloodCompQuery.ToEntityArray(Allocator.Temp);
-            try
+            // Skipped as a BLOCK, not with an early return. This used to be
+            // `if (!GlowUseBloodComponent) return;`, which also skipped ApplyRenderers() and
+            // ReportDrops() below - so switching off a setting that is only supposed to narrow
+            // the second blood source silently disabled the entire renderer route and the log
+            // line that would have said so. Turning a knob off must never skip the apply phase.
+            if (_cfg.GlowUseBloodComponent.Value)
             {
-                for (int i = 0; i < ents2.Length; i++)
+                var ents2 = _bloodCompQuery.ToEntityArray(Allocator.Temp);
+                try
                 {
-                    var e = ents2[i];
-                    float pct;
-                    try
+                    for (int i = 0; i < ents2.Length; i++)
                     {
-                        if (Has<PlayerCharacter>(em, e) || Has<BloodConsumeSource>(em, e)) continue;
-                        pct = Percent(Read<Blood>(em, e).Quality);
+                        var e = ents2[i];
+                        try
+                        {
+                            if (Has<PlayerCharacter>(em, e) || Has<BloodConsumeSource>(em, e)) continue;
+                            float pct = Percent(Read<Blood>(em, e).Quality);
+                            Select(em, e, pct, hiMin, perfectMin, hiColor, perfectColor, intensity);
+                        }
+                        catch { _dropSelectThrew++; }
                     }
-                    catch { continue; }
-                    Select(em, e, pct, hiMin, perfectMin, hiColor, perfectColor, intensity);
+                    scanned += ents2.Length;
                 }
-                scanned += ents2.Length;
+                finally { ents2.Dispose(); }
             }
-            finally { ents2.Dispose(); }
 
             // Zeroed HERE, not inside ApplyRenderers: that method early-returns when the renderer
             // route is off, so resetting inside it would leave the previous mode's numbers frozen
@@ -183,6 +197,7 @@ namespace VRVisionBoost
             _dropNoGameObject = _dropNoRendererComp = _dropNoRenderers = _dropApplyThrew = 0;
             _paintedRenderers = 0;
             _dropRukhanka = 0;
+            _dropSelectThrew = 0;
             _resolvedVia = "none";
 
             ApplyRenderers();
@@ -219,6 +234,7 @@ namespace VRVisionBoost
                      + $"noGameObject={_dropNoGameObject} (rukhanka={_dropRukhanka}) "
                      + $"noRendererComp={_dropNoRendererComp} "
                      + $"noRenderers={_dropNoRenderers} applyThrew={_dropApplyThrew} "
+                     + (_dropSelectThrew > 0 ? $"selectThrew={_dropSelectThrew} " : "")
                      + $"emit={emit}"
                      + (_emitDead > 0 ? " emitDead=some" : "")
                      + (_emitThrewDots > 0 ? " dotsThrew=some" : "");

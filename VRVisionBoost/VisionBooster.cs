@@ -517,9 +517,22 @@ namespace VRVisionBoost
                 try
                 {
                     if (!em.Exists(o.Entity)) continue;
-                    if (o.HasHideable && Has<Hideable>(em, o.Entity)) { Write(em, o.Entity, o.Hideable); restored++; }
-                    if (o.HasCheck && Has<CheckOnScreen>(em, o.Entity)) Write(em, o.Entity, o.Check);
-                    if (o.HasVision && Has<Vision>(em, o.Entity)) Write(em, o.Entity, o.Vision);
+                    // Counted on the WRITE, and across ALL THREE components. `restored++` used
+                    // to sit on the Hideable if-CONDITION, which was wrong twice over: with
+                    // _writesDisabled it logged "Restored original visibility state on N
+                    // entities" having restored none, and it ignored Vision and CheckOnScreen
+                    // entirely. The second half mattered most for the local character, whose
+                    // entry is Vision-only - set RevealAllUnits=false with a VisionRange and the
+                    // revert worked while the log said nothing at all, because `restored` stayed
+                    // 0 and the line below is gated on it.
+                    bool any = false;
+                    if (o.HasHideable && Has<Hideable>(em, o.Entity)
+                        && Write(em, o.Entity, o.Hideable)) any = true;
+                    if (o.HasCheck && Has<CheckOnScreen>(em, o.Entity)
+                        && Write(em, o.Entity, o.Check)) any = true;
+                    if (o.HasVision && Has<Vision>(em, o.Entity)
+                        && Write(em, o.Entity, o.Vision)) any = true;
+                    if (any) restored++;
                 }
                 catch { /* entity gone; nothing to restore */ }
             }

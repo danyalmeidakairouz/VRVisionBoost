@@ -112,6 +112,15 @@ namespace VRVisionBoost
         private readonly List<Entity> _targets = new List<Entity>();
         private readonly List<float4> _colors = new List<float4>();
 
+        /// <summary>
+        /// Per target, whether the SEQUENCER route can reach it - i.e. whether it has a hybrid
+        /// model at all. A world chest has none, so every per-frame AddChange aimed at one is
+        /// work that cannot produce a pixel: roughly five interop calls per chest per frame, at
+        /// whatever framerate the game is running. Decided on the scan so the per-frame loop only
+        /// has a bool to check.
+        /// </summary>
+        private readonly List<bool> _sequencerReachable = new List<bool>();
+
         private enum Verdict : byte { Unknown = 0, No = 1, Full = 2, Empty = 3 }
 
         /// <summary>
@@ -136,7 +145,7 @@ namespace VRVisionBoost
         private bool _warnedNoLocal;
         private int _dupThisTarget;
         private int _paintedRenderers, _viaRendererComp, _viaPlainRenderers;
-        private int _emitOk, _emitDead, _emitThrewHybrid, _emitThrewDots;
+        private int _emitOk, _emitDead, _emitThrewHybrid, _emitThrewDots, _emitUnreachable;
         private string _lastDrops = "";
 
         public ChestGlow(Settings cfg, ManualLogSource log) { _cfg = cfg; _log = log; }
@@ -152,6 +161,7 @@ namespace VRVisionBoost
             RestoreStaticChildren();
             _targets.Clear();
             _colors.Clear();
+            _sequencerReachable.Clear();
             _reportPending = true;
         }
 
@@ -187,6 +197,7 @@ namespace VRVisionBoost
             RestoreStaticChildren();
             _targets.Clear();
             _colors.Clear();
+            _sequencerReachable.Clear();
             if (!_layoutOk)
             {
                 // Say it once per attach. Returning here skips ReportDrops and the "Chest glow
@@ -255,8 +266,7 @@ namespace VRVisionBoost
                     var e = ents[i];
 
                     int guid;
-                    try { guid = Read<PrefabGUID>(em, e)._Value; }
-                    catch { continue; }
+                    if (!TryReadPrefabGuid(em, e, out guid)) continue;
 
                     var v = Classify(guid);
                     if (v != Verdict.Full && v != Verdict.Empty) continue;
@@ -270,7 +280,8 @@ namespace VRVisionBoost
                     // gameplay entity carries no rendering components, and its visuals live on
                     // StaticHierarchyBuffer children. Testing HybridModelUser alone selects
                     // nothing at all.
-                    if (!HasModel(em, e) && !Has<ProjectM.StaticHierarchyBuffer>(em, e)) continue;
+                    bool hasModel = HasModel(em, e);
+                    if (!hasModel && !Has<ProjectM.StaticHierarchyBuffer>(em, e)) continue;
 
                     if (maxDist > 0f && haveMe)
                     {
@@ -283,6 +294,12 @@ namespace VRVisionBoost
                     c.xyz *= intensity;
                     _targets.Add(e);
                     _colors.Add(c);
+                    // Deliberately the COMPONENT test, not HasModel(). HasModel also requires
+                    // HybridEntity to be non-null, which is transient - it flips as soon as a
+                    // model streams in - so latching it here would leave a prop untinted until
+                    // the next scan. Whether the entity has HybridModelUser at all is structural:
+                    // a world chest has none and never will, which is the case worth skipping.
+                    _sequencerReachable.Add(Has<HybridModelUser>(em, e));
                 }
             }
             finally { ents.Dispose(); }
@@ -658,9 +675,9 @@ namespace VRVisionBoost
                 var c = _colors[i];
                 var want = new float4(c.x, c.y, c.z, 1f);
 
-                ProjectM.StaticHierarchyBuffer[] kids;
                 string why;
-                if (!TryReadBuffer(em, _targets[i], MaxTintChildren, out kids, out why) || kids == null)
+                if (!TryReadBuffer(em, _targets[i], MaxTintChildren, ref _kidScratch, out why)
+                    || _kidScratch == null)
                 {
                     // "empty" is the ordinary case - this entity simply has no static hierarchy.
                     // Anything else means the buffer could not be READ, which looks identical in
@@ -681,6 +698,7 @@ namespace VRVisionBoost
                     continue;
                 }
 
+                var kids = _kidScratch;
                 int painted = 0;
                 int shared = 0;
                 for (int k = 0; k < kids.Length; k++)
@@ -775,6 +793,9 @@ namespace VRVisionBoost
             new Dictionary<ulong, ChildOriginal>();
         private readonly HashSet<ulong> _childThisScan = new HashSet<ulong>();
 
+        /// <summary>Reused child buffer for the tint walk - see TryReadBuffer's items param.</summary>
+        private ProjectM.StaticHierarchyBuffer[] _kidScratch;
+
         private static ulong Key(Entity e) => ((ulong)(uint)e.Index << 32) | (uint)e.Version;
 
         /// <summary>
@@ -863,6 +884,23 @@ namespace VRVisionBoost
 
             for (int i = 0; i < _targets.Count; i++)
             {
+                // Both AddChange calls below resolve through a hybrid model. A world chest has
+                // none - it is drawn by its static render children - so emitting at one every
+                // frame cannot produce a pixel and costs about four interop calls per frame for
+                // nothing. Decided on the scan; this is just a bool.
+                //
+                // COUNTED, not silently skipped. The premise - that AddChange cannot serve an
+                // entity with no HybridModelUser - is an assertion about IL2CPP stub internals
+                // that cannot be established statically, exactly like the BatFog `active` flag.
+                // If it is wrong for some archetype, the symptom is "props that used to glow
+                // stopped", and without this counter there would be no number in the log
+                // pointing at the line that did it.
+                if (i < _sequencerReachable.Count && !_sequencerReachable[i])
+                {
+                    _emitUnreachable++;
+                    continue;
+                }
+
                 var e = _targets[i];
                 // Entities die between scans; emitting at a dead one would throw every frame.
                 if (!em.Exists(e)) { _emitDead++; continue; }
@@ -922,9 +960,10 @@ namespace VRVisionBoost
                      // A count that only moves when something breaks stays a count.
                      + (_nameFailed > 0 ? $"names={_nameOk}ok/{_nameFailed}fail " : "")
                      + $"emit={emit}"
+                     + (_emitUnreachable > 0 ? " emitSkippedNoHybrid=some" : "")
                      + (_emitDead > 0 ? " emitDead=some" : "")
                      + (_emitThrewDots > 0 ? " dotsThrew=some" : "");
-            _emitOk = _emitDead = _emitThrewHybrid = _emitThrewDots = 0;
+            _emitOk = _emitDead = _emitThrewHybrid = _emitThrewDots = _emitUnreachable = 0;
             if (string.Equals(s, _lastDrops, StringComparison.Ordinal)) return;
             _lastDrops = s;
             _log.LogInfo($"Chest glow [{_cfg.ChestGlowMode.Value}]: {s}");
@@ -985,8 +1024,7 @@ namespace VRVisionBoost
                 {
                     var e = ents[i];
                     int guid;
-                    try { guid = Read<PrefabGUID>(em, e)._Value; }
-                    catch { continue; }
+                    if (!TryReadPrefabGuid(em, e, out guid)) continue;
 
                     string name;
                     if (!_names.TryGetValue(guid, out name))
@@ -1126,6 +1164,7 @@ namespace VRVisionBoost
             RestoreStaticChildren();
             _targets.Clear();
             _colors.Clear();
+            _sequencerReachable.Clear();
 
             // The name caches are keyed by prefab GUID, which is game data rather than world
             // state - but the lookup map they were answered from belongs to the world being
@@ -1308,11 +1347,13 @@ namespace VRVisionBoost
         /// depends on has to hold for the ELEMENT type - checked here rather than assumed,
         /// because reading at the wrong stride walks into the next entity's data.
         /// </summary>
+        /// <param name="items">Reused when it is already the right length, so a scan over many
+        /// chests does not allocate one array per chest. Callers must not read it when this
+        /// returns false - it may still hold the previous entity's children.</param>
         private unsafe bool TryReadBuffer<T>(EntityManager em, Entity e, int max,
-                                             out T[] items, out string why)
+                                             ref T[] items, out string why)
             where T : struct
         {
-            items = null;
             why = null;
             int stride;
             try { stride = Marshal.SizeOf<T>(); }
@@ -1343,13 +1384,13 @@ namespace VRVisionBoost
                 if (p == null) { why = "null buffer pointer"; return false; }
 
                 int take = Math.Min(len, max);
-                items = new T[take];
+                if (items == null || items.Length != take) items = new T[take];
                 for (int i = 0; i < take; i++)
                     items[i] = Marshal.PtrToStructure<T>(new IntPtr((byte*)p + (long)i * stride));
                 why = len > take ? $"{len} entries, first {take} read" : $"{len} entries";
                 return true;
             }
-            catch (Exception ex) { items = null; why = ex.Message; return false; }
+            catch (Exception ex) { why = ex.Message; return false; }
         }
 
         /// <summary>
@@ -1361,9 +1402,9 @@ namespace VRVisionBoost
         {
             total = 0;
             tintable = 0;
-            ProjectM.StaticHierarchyBuffer[] kids;
+            ProjectM.StaticHierarchyBuffer[] kids = null;
             string why;
-            if (!TryReadBuffer(em, e, MaxTintChildren, out kids, out why) || kids == null) return false;
+            if (!TryReadBuffer(em, e, MaxTintChildren, ref kids, out why) || kids == null) return false;
 
             for (int i = 0; i < kids.Length; i++)
             {
@@ -1519,6 +1560,46 @@ namespace VRVisionBoost
         private static bool Has<T>(EntityManager em, Entity e) where T : struct
         {
             try { return em.HasComponent(e, Ct<T>.Value); }
+            catch { return false; }
+        }
+
+        /// <summary>
+        /// Read a PrefabGUID without going through <see cref="Read{T}"/>.
+        ///
+        /// This is the hottest line in the plugin: the scan query matches every entity carrying
+        /// PrefabGUID + Translation, which measured 6,700-7,100 in a normal world, and it runs
+        /// for all of them once per ChestScanMs. Marshal.PtrToStructure is the general
+        /// marshalling path and is far more expensive than this needs to be.
+        ///
+        /// PrefabGUID is ExplicitLayout with a single <c>int _Value</c> at offset 0, so reading
+        /// four bytes there is the same value the marshaller would have produced, without the
+        /// marshaller. Two honest caveats: <see cref="VerifyChestLayout"/> size-checks the type
+        /// only when its probe can run - it FAILS OPEN on a null class pointer or a throw - and a
+        /// size check would not establish the offset anyway. The offset-0 assumption is this
+        /// shortcut's own premise, supported by PrefabGUID._Value being read directly elsewhere
+        /// in this file and by PrefabGUID.CreateUnsafe(int) round-tripping it. What the shortcut
+        /// does guarantee is direction: it reads strictly FEWER bytes than PtrToStructure did.
+        ///
+        /// Do NOT generalise this to <see cref="Read{T}"/>. The safety argument for every other
+        /// component in this plugin rests on Marshal.SizeOf semantics for multi-field structs;
+        /// this holds only because the type is one int.
+        ///
+        /// The caller must already know the entity carries PrefabGUID. Both call sites iterate
+        /// _prefabQuery, which requires it. There is no Has&lt;T&gt; guard here and the null check
+        /// below is not a reliable backstop - with collections checks compiled out,
+        /// GetComponentDataRawRO for a missing component is not guaranteed to return null or
+        /// throw.
+        /// </summary>
+        private static unsafe bool TryReadPrefabGuid(EntityManager em, Entity e, out int guid)
+        {
+            guid = 0;
+            try
+            {
+                void* ptr = em.GetComponentDataRawRO(e, Ct<PrefabGUID>.Value.TypeIndex);
+                if (ptr == null) return false;
+                guid = *(int*)ptr;
+                return true;
+            }
             catch { return false; }
         }
 
