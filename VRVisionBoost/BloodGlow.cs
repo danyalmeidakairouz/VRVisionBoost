@@ -533,10 +533,20 @@ namespace VRVisionBoost
             }
         }
 
-        /// <summary>Put every renderer we wrote back exactly as we found it.</summary>
+        /// <summary>
+        /// Put every renderer we wrote back exactly as we found it.
+        ///
+        /// Iterated BACKWARDS, and that is not cosmetic. Nothing stops the same renderer being
+        /// recorded twice in one scan if two selected units ever resolve to one GameObject: the
+        /// first entry holds the true original, and the second holds whatever GetPropertyBlock
+        /// returned AFTER the first write - which is our own colour. Restoring forwards lets that
+        /// second entry win and leaves the unit permanently tinted, with no record of the real
+        /// original left to recover from - surviving Reset, both toggles and OnDestroy. Going
+        /// backwards applies the earliest capture last, so the true original always wins.
+        /// </summary>
         private void RestoreRenderers()
         {
-            for (int i = 0; i < _touched.Count; i++)
+            for (int i = _touched.Count - 1; i >= 0; i--)
             {
                 try
                 {

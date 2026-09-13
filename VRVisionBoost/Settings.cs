@@ -44,6 +44,21 @@ namespace VRVisionBoost
         public ConfigEntry<string> GlowMode;
         public ConfigEntry<string> GlowRendererProperty;
 
+        public ConfigEntry<bool> ChestGlowEnabled;
+        public ConfigEntry<string> ChestGlowKey;
+        public ConfigEntry<string> ChestNameContains;
+        public ConfigEntry<bool> ChestUnlootedOnly;
+        public ConfigEntry<string> ChestColor;
+        public ConfigEntry<string> ChestEmptyColor;
+        public ConfigEntry<float> ChestGlowIntensity;
+        public ConfigEntry<float> ChestGlowRange;
+        public ConfigEntry<float> ChestScanMs;
+        public ConfigEntry<string> ChestGlowMode;
+        public ConfigEntry<string> ChestRendererProperty;
+        public ConfigEntry<string> ChestGlowProperty;
+        public ConfigEntry<int> ChestGlowImportance;
+        public ConfigEntry<string> ChestDumpFilter;
+
         public ConfigEntry<bool> BatFogEnabled;
         public ConfigEntry<string> BatFogKey;
         public ConfigEntry<bool> ZeroCloudiness;
@@ -123,6 +138,35 @@ namespace VRVisionBoost
                 "Which volume components to switch off, by type name, comma separated. This is a list rather than fixed code because V Rising does NOT use Unity's stock cloud system - the scene's 'Scene PostProcess' volume carries Stunlock's own StunlockSky and StunlockFogVolumeComponent instead of VolumetricClouds and CloudLayer, so the right target had to be found by looking rather than guessing. Names are matched against the component's type name, case-insensitively. Press the reload key after editing - no rebuild needed. Candidates seen in game: BatFormFog, StunlockFogVolumeComponent, StunlockSky, ExponentialFog, VolumetricFog, Fog, VolumetricClouds, CloudLayer, PhysicallyBasedSky, GradientSky, HDRISky. Add StunlockSky if clouds are still drawing, but expect it to change the whole sky, not just the clouds. Everything listed is restored on toggle-off.");
             DestroyFogMaterial = cfg.Bind("5. Bat form fog", "DestroyFogMaterial", true,
                 "Destroy the BatFormFog effect's material instead of only switching the component off. Measured in game: setting the component inactive and zeroing its intensity left the fog drawing, and destroying the material is what actually stops it - this is also what the RetroCamera mod does, which is the only known working implementation. The material is copied before it is destroyed and rebuilt from that copy on toggle-off. Set false to use only the inactive/intensity route, which is gentler but did not work here.");
+
+            ChestGlowEnabled = cfg.Bind("6. Chest glow", "ChestGlowEnabled", false,
+                "Tint world chests by prefab name so a golden chest is findable from the air. Independent of the vision boost and the blood glow, and toggled separately with ChestGlowKey. Off by default - turn it on, stand next to a chest you can see and press the dump key to confirm the plugin agrees with you about what it is.");
+            ChestGlowKey = cfg.Bind("6. Chest glow", "ChestGlowKey", "F9",
+                "Key that toggles the chest glow on/off. Flips ChestGlowEnabled and saves it, so the choice survives a restart. Leave empty to disable.");
+            ChestNameContains = cfg.Bind("6. Chest glow", "ChestNameContains", "WorldChest_Epic",
+                "Which prefabs count as a chest, as a comma-separated case-insensitive list. A token that is a plain number is matched against the raw prefab GUID; every other token is matched as a substring of the prefab's authoring name. The world chests are TM_WorldChest_<kind>_01_Full and _Empty, where <kind> is Epic, Iron, Simple, Simple_GloomRot or Simple_SludgePools - and Epic is the gold-trimmed one, so the default lights up only those. Widen to 'WorldChest' for every world chest, or add 'Container' to include castle furniture. A BLANK value matches nothing rather than everything: the other reading would tint the whole world the moment you cleared it to see what it did. Names are read from the running game rather than hardcoded, so a patch that renumbers prefab GUIDs changes nothing here - and if name lookup ever fails on your build, the dump prints a guid= for each entity that you can paste in here instead.");
+            ChestUnlootedOnly = cfg.Bind("6. Chest glow", "ChestUnlootedOnly", true,
+                "Glow only chests that still have loot in them. A looted chest swaps to its _Empty prefab, so 'still worth walking to' is readable straight off the name and a chest visibly stops glowing once you empty it. Off also glows looted chests, in ChestEmptyColor.");
+            ChestColor = cfg.Bind("6. Chest glow", "ChestColor", "1,0.84,0",
+                "Colour for an unlooted chest, as r,g,b in the 0-1 range. Default is gold.");
+            ChestEmptyColor = cfg.Bind("6. Chest glow", "ChestEmptyColor", "0.35,0.3,0.15",
+                "Colour for a chest you have already looted. Only used when ChestUnlootedOnly is off - a dull version of the gold, so an emptied chest reads as 'been here' rather than as a target.");
+            ChestGlowIntensity = cfg.Bind("6. Chest glow", "ChestGlowIntensity", 1f,
+                "Multiplier on the colour. Higher is brighter and washes toward flat colour; lower is a subtler sheen. Try 0.3-2.");
+            ChestGlowRange = cfg.Bind("6. Chest glow", "ChestGlowRange", 0f,
+                "0 = every chest the client knows about. Otherwise only tint chests within this many meters of you. Chests are static scenery and there are a lot of them inside a castle, so this is here to keep the work down, not because distant chests are a problem.");
+            ChestScanMs = cfg.Bind("6. Chest glow", "ChestScanMs", 1000f,
+                "How often the chest list is rebuilt (ms). Much slower than the blood glow's scan on purpose: chests do not move and do not change quality, so the only thing this controls is how quickly a newly streamed chest starts glowing and how quickly one you just looted stops. In Sequencer mode the tint is still re-emitted every frame regardless - that is required, the game drains its change list per frame.");
+            ChestGlowMode = cfg.Bind("6. Chest glow", "ChestGlowMode", "Both",
+                "How the tint is applied, and you almost certainly want Both. Containers are drawn three different ways and each route reaches exactly one of them. Static = write the game's own ShaderProperty_BlinkColor on each of the entity's static render children; this is the ONLY route that reaches a world chest, whose gameplay entity carries no rendering components at all. Renderer = write MaterialPropertyBlocks on a hybrid model's renderers, falling back to the model's own child renderers when the character-only HybridModelRendererComponent is absent. Sequencer = hand a change to the game's MaterialPropertySystem for the channel named in ChestGlowProperty, the only way to reach a GPU-skinned (Rukhanka) prop. Both = do all three, which is why widening the filter makes some containers light up and not others - that is the rendering flavour, not a bug. The log names the route that reached each one.");
+            ChestRendererProperty = cfg.Bind("6. Chest glow", "ChestRendererProperty", "EmissiveColor",
+                "Renderer route only: which shader colour to write - EmissiveColor (brightness, which only blooms into a halo if BloomQuality is above 0 in the game's graphics settings) or BaseColor (repaints the albedo; reads as a strong flat tint). Emissive is the default here rather than BaseColor because a chest is meant to catch your eye from altitude, not to change colour. Ignored in Sequencer mode.");
+            ChestGlowProperty = cfg.Bind("6. Chest glow", "ChestGlowProperty", "_BlinkColor",
+                "Sequencer route only: which material channel carries the tint, from ProjectM.Sequencer.SupportedDotsProperty: _BlinkColor, _DissolveColor, _AlphaMultiply, _DitherAlpha, _DissolveHeightMultiplier, _RustleForceVector, _RustleAnimationTime, _OverlappingAnimationTime. Only _BlinkColor and _DissolveColor carry a colour; the rest take a single number and will do something other than tint. The Static route ignores this setting and always writes ShaderProperty_BlinkColor, which is the override world chests actually carry.");
+            ChestGlowImportance = cfg.Bind("6. Chest glow", "ChestGlowImportance", 0,
+                "Sequencer route only: arbitration against the game's own uses of the channel named in ChestGlowProperty. Higher should win.");
+            ChestDumpFilter = cfg.Bind("6. Chest glow", "ChestDumpFilter", "Chest,Container",
+                "Used ONLY by the dump key, and deliberately wider than ChestNameContains: this is how you discover what the prefabs on your build are actually called before you commit to a filter. Every entity whose prefab name matches is printed with its name, raw GUID, distance, whether it is looted, whether your current ChestNameContains selects it, and how it is drawn - children=8/8 means eight static render children and every one of them tintable. Entities whose prefab name cannot be resolved at all are listed too when they are within 15m of you, capped at 25 lines, so the dump still tells you something in the one state it most needs to. Widen to 'TM_' if nothing shows up.");
         }
     }
 }

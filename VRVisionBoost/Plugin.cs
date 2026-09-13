@@ -14,7 +14,7 @@ namespace VRVisionBoost
         // The GUID determines the config filename. Changing it orphans the existing config.
         public const string GUID = "vrvisionboost";
         public const string NAME = "VRVisionBoost";
-        public const string VERSION = "1.0.2";
+        public const string VERSION = "1.0.3";
 
         internal static ManualLogSource Logger;
         internal static Settings Cfg;
@@ -40,8 +40,9 @@ namespace VRVisionBoost
         private VisionBooster _vision;
         private BloodGlow _glow;
         private BatFog _batFog;
+        private ChestGlow _chests;
         private float _nextTick;
-        private int _toggleKey, _dumpKey, _reloadKey, _glowKey, _batFogKey;
+        private int _toggleKey, _dumpKey, _reloadKey, _glowKey, _batFogKey, _chestKey;
 
         void Awake()
         {
@@ -49,7 +50,9 @@ namespace VRVisionBoost
             _vision = new VisionBooster(Plugin.Cfg, Plugin.Logger);
             _glow = new BloodGlow(Plugin.Cfg, Plugin.Logger);
             _batFog = new BatFog(Plugin.Cfg, Plugin.Logger);
-            _vision.Glow = _glow;   // so the dump can say why a unit is or is not glowing
+            _chests = new ChestGlow(Plugin.Cfg, Plugin.Logger);
+            _vision.Glow = _glow;       // so the dump can say why a unit is or is not glowing
+            _vision.Chests = _chests;   // so the dump can also list world chests
             ParseHotkeys();
         }
 
@@ -84,33 +87,67 @@ namespace VRVisionBoost
                 Plugin.Logger.LogWarning($"BatFogKey '{batFogCfg}' is not a key name this plugin "
                                        + "understands - the bat fog hotkey is disabled.");
 
+            // The chest glow key may legitimately be unbound too.
+            string chestCfg = Plugin.Cfg.ChestGlowKey.Value;
+            _chestKey = Hotkeys.Parse(chestCfg);
+            string chest = _chestKey != 0 ? chestCfg.Trim() : "(none)";
+            if (_chestKey == 0 && !string.IsNullOrWhiteSpace(chestCfg))
+                Plugin.Logger.LogWarning($"ChestGlowKey '{chestCfg}' is not a key name this plugin "
+                                       + "understands - the chest glow hotkey is disabled.");
+
             // Two actions on one key silently means only the first ever fires: WasPressed
             // consumes the up-to-down edge for that key, so the second call sees it already down.
-            // Five keys means ten pairs - add the new row if a sixth is ever introduced.
-            WarnIfShared(_toggleKey, toggle, "toggle", _dumpKey, dump, "dump");
-            WarnIfShared(_toggleKey, toggle, "toggle", _reloadKey, reload, "reload");
-            WarnIfShared(_dumpKey, dump, "dump", _reloadKey, reload, "reload");
-            WarnIfShared(_toggleKey, toggle, "toggle", _glowKey, glow, "glow toggle");
-            WarnIfShared(_dumpKey, dump, "dump", _glowKey, glow, "glow toggle");
-            WarnIfShared(_reloadKey, reload, "reload", _glowKey, glow, "glow toggle");
-            WarnIfShared(_toggleKey, toggle, "toggle", _batFogKey, batFog, "bat fog toggle");
-            WarnIfShared(_dumpKey, dump, "dump", _batFogKey, batFog, "bat fog toggle");
-            WarnIfShared(_reloadKey, reload, "reload", _batFogKey, batFog, "bat fog toggle");
-            WarnIfShared(_glowKey, glow, "glow toggle", _batFogKey, batFog, "bat fog toggle");
+            //
+            // This used to be one hand-written call per pair, with a comment saying to add the
+            // new row when a key was added. Five keys is ten pairs and six is fifteen, so that
+            // list was one forgotten line away from a hotkey clash going unreported - which is
+            // precisely the failure this check exists to catch, and the log is the only feedback
+            // channel this plugin has. The pairs are now generated, so adding a seventh key means
+            // adding one row to the table below and nothing else.
+            //
+            // THE ORDER OF THIS ARRAY IS LOAD-BEARING and must match the order of the
+            // WasPressed() if-chain in Update(). WarnIfShared reports the EARLIER entry as the one
+            // that fires, because WasPressed consumes the up-to-down edge and whichever branch
+            // runs first therefore wins. The hand-written list this replaced was ordered
+            // toggle/dump/reload/glow/..., which does NOT match Update(), so a dump+glow clash
+            // announced "only dump will fire" when glow is in fact the one that fires - sending
+            // you to debug the half that was working. Reorder Update() and you must reorder this.
+            var bound = new[]
+            {
+                new KeyBinding(_toggleKey, toggle, "toggle"),
+                new KeyBinding(_glowKey, glow, "glow toggle"),
+                new KeyBinding(_batFogKey, batFog, "bat fog toggle"),
+                new KeyBinding(_chestKey, chest, "chest glow toggle"),
+                new KeyBinding(_dumpKey, dump, "dump"),
+                new KeyBinding(_reloadKey, reload, "reload"),
+            };
+            for (int i = 0; i < bound.Length; i++)
+                for (int j = i + 1; j < bound.Length; j++)
+                    WarnIfShared(bound[i], bound[j]);
 
             // Report what is actually bound, never what was merely configured: the log is the
             // only feedback channel, so echoing an unparseable string back would send someone
             // hunting for a broken hotkey that is in fact bound to the default.
             Plugin.Logger.LogInfo($"Hotkeys - vision: {toggle}  glow: {glow}  batfog: {batFog}  "
-                                + $"dump: {dump}  reload: {reload}");
+                                + $"chests: {chest}  dump: {dump}  reload: {reload}");
         }
 
-        private static void WarnIfShared(int vkA, string nameA, string labelA,
-                                        int vkB, string nameB, string labelB)
+        /// <summary>A parsed hotkey plus what to call it in a warning. Name is what was actually
+        /// bound, not what was configured - see <see cref="Bind"/>.</summary>
+        private readonly struct KeyBinding
         {
-            if (vkA == 0 || vkA != vkB) return;
-            Plugin.Logger.LogWarning($"{labelA} and {labelB} are both bound to {nameA} - only "
-                                   + $"{labelA} will fire. Give them different keys.");
+            internal readonly int Vk;
+            internal readonly string Name;
+            internal readonly string Label;
+            internal KeyBinding(int vk, string name, string label) { Vk = vk; Name = name; Label = label; }
+        }
+
+        private static void WarnIfShared(KeyBinding a, KeyBinding b)
+        {
+            // Vk 0 is "unbound", and any number of actions may be unbound at once.
+            if (a.Vk == 0 || a.Vk != b.Vk) return;
+            Plugin.Logger.LogWarning($"{a.Label} and {b.Label} are both bound to {a.Name} - only "
+                                   + $"{a.Label} will fire. Give them different keys.");
         }
 
         /// <summary>
@@ -145,6 +182,7 @@ namespace VRVisionBoost
                 {
                     try { _glow.Reset(); } catch { }
                     try { _batFog.Revert(); } catch { }
+                    try { _chests.Reset(); } catch { }
                 }
                 Plugin.Logger.LogInfo($"VRVisionBoost {(on ? "ON" : "OFF")} - all features");
                 _nextTick = 0f; // apply immediately rather than waiting out the interval
@@ -166,6 +204,16 @@ namespace VRVisionBoost
                 bool on = !Plugin.Cfg.BatFogEnabled.Value;
                 Plugin.Cfg.BatFogEnabled.Value = on;
                 Plugin.Logger.LogInfo($"Bat form fog removal {(on ? "ON" : "OFF")}"
+                                    + (_vision.Active ? "" : " (nothing will happen until the master toggle is on)"));
+            }
+            if (_keys.WasPressed(_chestKey))
+            {
+                // Same shape as the other two feature toggles: persist the choice, and let
+                // ChestGlow notice the setting is off on its next frame and put its renderer
+                // property blocks back itself. Nothing to undo here.
+                bool on = !Plugin.Cfg.ChestGlowEnabled.Value;
+                Plugin.Cfg.ChestGlowEnabled.Value = on;
+                Plugin.Logger.LogInfo($"Chest glow {(on ? "ON" : "OFF")}"
                                     + (_vision.Active ? "" : " (nothing will happen until the master toggle is on)"));
             }
             if (_keys.WasPressed(_dumpKey))
@@ -198,6 +246,12 @@ namespace VRVisionBoost
 
                 try { _batFog.Update(); }
                 catch (Exception e) { Plugin.Logger.LogError($"Bat fog error: {Describe(e)}"); }
+
+                // Above the gate for the same reason as the blood glow: its sequencer route has
+                // to re-emit every frame or the tint strobes, and its own scan interval
+                // (ChestScanMs) throttles the expensive half internally.
+                try { _chests.Update(); }
+                catch (Exception e) { Plugin.Logger.LogError($"Chest glow error: {Describe(e)}"); }
             }
 
             float now = Time.unscaledTime;
@@ -234,6 +288,7 @@ namespace VRVisionBoost
         {
             try { _glow?.Reset(); } catch { }
             try { _batFog?.Reset(); } catch { }
+            try { _chests?.Reset(); } catch { }
             try { _vision?.Revert(); }
             catch (Exception e) { Plugin.Logger.LogError($"Revert on shutdown failed: {e.Message}"); }
         }

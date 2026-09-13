@@ -4,7 +4,7 @@
     <TargetFramework>net6.0</TargetFramework>
     <AssemblyName>VRVisionBoost</AssemblyName>
     <RootNamespace>VRVisionBoost</RootNamespace>
-    <Version>1.0.2</Version>
+    <Version>1.0.3</Version>
     <LangVersion>latest</LangVersion>
     <Nullable>disable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
@@ -35,8 +35,13 @@
     <Reference Include="$(BepInExDir)\interop\Unity.Transforms.dll" Private="false" />
     <Reference Include="$(BepInExDir)\interop\Unity.Mathematics.dll" Private="false" />
     <Reference Include="$(BepInExDir)\interop\Unity.Collections.dll" Private="false" />
-    <!-- Vision, Hideable, PlayerCharacter, LocalCharacter -->
+    <!-- Vision, Hideable, PlayerCharacter, LocalCharacter, and PrefabCollectionSystem, whose
+         static GetPrefabLookupMap(World) is how ChestGlow turns a PrefabGUID into a name. -->
     <Reference Include="$(BepInExDir)\interop\ProjectM.Shared.dll" Private="false" />
+    <!-- PrefabGUID and PrefabLookupMap. These are Stunlock.Core, NOT ProjectM - the prefab
+         identity type that every entity carries lives in its own assembly, and assuming it sat
+         in ProjectM.Shared alongside everything that reads it costs a compile error. -->
+    <Reference Include="$(BepInExDir)\interop\Stunlock.Core.dll" Private="false" />
     <!-- CheckOnScreen and the HideOutsideVision tag live here, not in ProjectM.Shared.
          Also BatFormFog, which is in the GLOBAL namespace despite living in this assembly. -->
     <Reference Include="$(BepInExDir)\interop\ProjectM.dll" Private="false" />

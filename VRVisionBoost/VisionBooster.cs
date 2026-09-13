@@ -142,6 +142,13 @@ namespace VRVisionBoost
         /// <summary>Set by the plugin so the dump can report glow state. Optional; may be null.</summary>
         internal BloodGlow Glow { get; set; }
 
+        /// <summary>
+        /// Set by the plugin so the dump can also list world chests. Optional; may be null - it
+        /// is a back-reference for reporting only, exactly like <see cref="Glow"/>, and nothing
+        /// on the vision path may be allowed to depend on it.
+        /// </summary>
+        internal ChestGlow Chests { get; set; }
+
         /// <summary>Whether the booster is currently writing to the world.</summary>
         public bool Active { get; private set; }
 
@@ -943,6 +950,17 @@ namespace VRVisionBoost
             }
             finally { all.Dispose(); }
             _log.LogInfo($"==== {chars} character-shaped entities (anything with Health) in the client world ====");
+
+            // World chests carry no Health, so every loop above skips them and the unit dump on
+            // its own can say nothing about whether a chest reached this client. Delegated rather
+            // than reimplemented here: resolving a PrefabGUID to a name needs the lookup map that
+            // ChestGlow already holds. Wrapped, because a failure in an optional extra section
+            // must never cost you the unit dump you actually pressed the key for.
+            if (Chests != null)
+            {
+                try { Chests.DumpChests(em, me, haveMe, _flightTagType, _flightTagUsable); }
+                catch (Exception e) { _log.LogError($"Chest dump failed: {e.Message}"); }
+            }
 
             // Disabled entities match no other query in this plugin, so a unit the game has
             // switched off would be invisible to every count above and look identical to

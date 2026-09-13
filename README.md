@@ -1,6 +1,6 @@
 # VRVisionBoost
 
-A BepInEx 6 (IL2CPP) client plugin for V Rising that does three independent things:
+A BepInEx 6 (IL2CPP) client plugin for V Rising that does four independent things:
 
 1. **Keeps units visible further away.** Mobs, VBloods and critters normally wink out at the
    edge of the game's fog of war. This pushes that cutoff back so they stay drawn out to roughly
@@ -11,8 +11,10 @@ A BepInEx 6 (IL2CPP) client plugin for V Rising that does three independent thin
 3. **Clears the fog and clouds in bat form.** Flying is normally a view of grey soup; this
    switches off the game's own `BatFormFog` screen effect and, optionally, the cloud cover
    underneath it, so you can see the ground you are flying over.
+4. **Makes world chests glow.** Tints world chests by type so a gold one stands out from the
+   surrounding clutter — and, by default, only while it still has loot in it.
 
-The three features are separate and separately toggled. None synthesizes input: the plugin only
+The four features are separate and separately toggled. None synthesizes input: the plugin only
 reads and writes ECS component and render state, and reads key state.
 
 ## The one limit you cannot tune away
@@ -144,16 +146,17 @@ the two ever disagree, `Settings.cs` is right.
 
 | Key | Does |
 |-----|------|
-| **F6** | **Master switch.** Toggles the whole plugin on/off — vision, blood glow and bat form fog together — and **undoes** everything all three wrote. The other keys do nothing while this is off |
+| **F6** | **Master switch.** Toggles the whole plugin on/off — vision, blood glow, bat form fog and chest glow together — and **undoes** everything all four wrote. The other keys do nothing while this is off |
 | **F7** | Toggle the blood glow on/off, independently of the other features. Saves the new state, so it survives a restart. Requires F6 to be on |
 | **F8** | Toggle the bat form fog removal on/off, independently of the other features. Saves the new state, so it survives a restart. Requires F6 to be on |
-| **F10** | Dump every unit the client knows about: distance, hide state, blood quality, whether the glow selected it. Also prints the full component list — and a glow diagnosis — for anything within `DumpComponentsRange` |
+| **F9** | Toggle the chest glow on/off, independently of the other features. Saves the new state, so it survives a restart. Requires F6 to be on |
+| **F10** | Dump every unit the client knows about: distance, hide state, blood quality, whether the glow selected it. Also lists world chests with their prefab names and whether either tint route can reach them. Also prints the full component list — and a glow diagnosis — for anything within `DumpComponentsRange` |
 | **F11** | Reload the config file |
 
 > **Check for hotkey collisions.** A plugin cannot see another plugin's bindings, so if something
 > else you have installed uses the same key, one press triggers both. Rebind whichever is easier.
 
-All five are configurable, but **single keys only** — `F1`-`F24`, `A`-`Z`, `0`-`9`, `Space`,
+All six are configurable, but **single keys only** — `F1`-`F24`, `A`-`Z`, `0`-`9`, `Space`,
 `Insert`, `Numpad0`-`Numpad9` and similar. Modifier combinations like `Ctrl+F6` are not
 supported; if you configure one the plugin warns in the log and falls back to the default. The
 log always names the key that was actually bound. Hotkeys are ignored unless the V Rising window
@@ -279,6 +282,108 @@ not an attempt to replace it. The implementation here is independent and deliber
 it switches the effect off through its `active` flag rather than destroying the material, and it
 does not touch the camera at all.
 
+## Chest glow
+
+Press **F9**. World chests get tinted by type, so a gold one stands out — and by default only
+while it still has loot in it.
+
+The plugin identifies them by **prefab name**, asked of the running game rather than hardcoded,
+so a patch that renumbers prefab GUIDs changes nothing:
+
+| Prefab | What it is |
+|--------|------------|
+| `TM_WorldChest_Epic_01_Full` / `_Empty` | the gold-trimmed one |
+| `TM_WorldChest_Iron_01_Full` / `_Empty` | iron |
+| `TM_WorldChest_Simple_01_Full` / `_Empty` | plain |
+| `TM_WorldChest_Simple_GloomRot_01_Full` / `_Empty` | plain, Gloomrot |
+| `TM_WorldChest_Simple_SludgePools_01_Full` / `_Empty` | plain, Sludge Pools |
+
+Two things fall out of that naming, and both are worth more than the tint itself:
+
+- **`ChestNameContains` defaults to `WorldChest_Epic`**, so out of the box only gold chests light
+  up. Widen it to `WorldChest` for all of them, or add `Container` to catch castle furniture. It
+  takes a comma-separated list of name substrings — or raw prefab GUIDs, which matters only if
+  name lookup ever fails on your build.
+- **`_Full` versus `_Empty` is in the prefab name**, so with `ChestUnlootedOnly` on (the default)
+  a chest stops glowing within a second of you emptying it. That is the difference between a
+  marker and a to-do list.
+
+| Key | Default | Does |
+|-----|---------|------|
+| `ChestGlowEnabled` | `false` | Master switch for this feature. F9 flips and saves it |
+| `ChestNameContains` | `WorldChest_Epic` | Which prefabs count as a chest. Name substrings or raw GUIDs, comma separated. Blank matches **nothing** |
+| `ChestUnlootedOnly` | `true` | Glow only chests that still have loot |
+| `ChestColor` | `1,0.84,0` | Colour for an unlooted chest — gold |
+| `ChestEmptyColor` | `0.35,0.3,0.15` | Colour for a looted one. Only used when `ChestUnlootedOnly` is off |
+| `ChestGlowIntensity` | `1` | Multiplier on the colour. Try 0.3–2 |
+| `ChestGlowRange` | `0` | `0` = every chest the client knows about; otherwise a radius in metres |
+| `ChestScanMs` | `1000` | How often the chest list is rebuilt. Slower than the blood glow's scan because chests do not move |
+| `ChestGlowMode` | `Both` | `Static`, `Renderer`, `Sequencer` or `Both` — see below |
+| `ChestRendererProperty` | `EmissiveColor` | Renderer route only: `EmissiveColor` or `BaseColor` |
+| `ChestGlowProperty` | `_BlinkColor` | The material channel the tint is written to |
+| `ChestGlowImportance` | `0` | Sequencer route only: arbitration against the game's own use of that channel |
+| `ChestDumpFilter` | `Chest,Container` | Used **only** by F10, and deliberately wider — this is how you discover the prefab names on your build |
+
+### Three routes, because containers are drawn three different ways
+
+A world chest's gameplay entity carries **no rendering components at all** — no `RenderBounds`,
+no `MaterialMeshInfo`, no `HybridModelUser`. Its visuals live on `StaticHierarchyBuffer`
+children, each a real Entities Graphics renderable carrying the game's own
+`ShaderProperty_BlinkColor` override. So the geometry is not merged into a combined static batch,
+and each piece is individually addressable.
+
+| Route | Reaches | How |
+|-------|---------|-----|
+| **Static** | world chests | writes `ShaderProperty_BlinkColor` on each render child |
+| Renderer | some castle props | writes `MaterialPropertyBlock`s on the model's renderers |
+| Sequencer | GPU-skinned (Rukhanka) props | hands a change to `MaterialPropertySystem_Dots` |
+
+`Both` runs all three, which is why some containers tint and others do not when you widen the
+filter — that is the rendering flavour, not a bug. The log names the route that reached each one.
+
+Everything the static and renderer routes write is captured before the first write and restored
+on rescan, on F9 off, on F6 off and on shutdown. The sequencer route self-reverts by definition:
+ceasing to emit *is* the revert.
+
+### You cannot spot them through a roof
+
+The glow tints the chest's own geometry, so it makes a chest that **is** being drawn obvious. It
+cannot make one that is not being drawn appear. Three things stop it, and none is fixable by
+tinting harder:
+
+- **Occlusion.** A tent or roof in front of the chest is opaque geometry and wins the depth test.
+- **Culling.** Those children carry `PerInstanceCullingTag`; a small object at altitude is culled
+  or LOD'd out before distance alone would hide it.
+- **Streaming.** Chests stop arriving at roughly 70–75 m, measured — shorter than the ~90 m for
+  units. Nothing client-side exceeds that.
+
+`SeeThroughWalls` does **not** help here. It writes `Hideable.IgnoreLoS`, and world chests carry
+no `Hideable` at all; it also only stops the game *hiding* things, it never makes geometry
+transparent.
+
+### Reading the log
+
+Same discipline as the blood glow — a counter never reports work that was suppressed:
+
+```
+Chest glow [Both]: targets=1 staticChildren=8 noHierarchy=0 noTintableChild=0
+painted=0 viaRendererComp=0 viaPlainRenderers=0 noGameObject=0 (rukhanka=0)
+noRenderers=0 noShaderProp=0 applyThrew=0 sharedModel=0 emit=idle
+```
+
+- `staticChildren=8` is the success signal for a world chest: eight render children written.
+- `targets=1 noTintableChild=1` means the chest was selected and its hierarchy read, but nothing
+  on it took a colour.
+- `childWriteFailed` non-zero means the layout check disabled the write route; there will be a
+  `LAYOUT MISMATCH` error above it naming the two sizes.
+- `noShaderProp` counts renderers whose shader does not declare the property being written —
+  writing a property a shader does not have is silent, so without this a run where every chest
+  ignored the tint would look identical to one that worked.
+- `names=Nfail` only appears when a prefab name could not be resolved.
+
+Press **F10** for the per-chest breakdown: prefab name, raw GUID, distance, whether your filter
+selects it, whether it is looted, and `children=8/8` for how much of it is tintable.
+
 ## How it works
 
 The plugin writes the *inputs* of the game's own visibility system rather than fighting its
@@ -316,6 +421,12 @@ rising `lastSeen` and an empty `model=`. The dump reports both, so you can check
 - **A disabled entity cannot be revealed.** If the game has switched a unit off
   (`Unity.Entities.Disabled`), no plain query selects it and neither the reveal nor the glow can
   reach it. The dump lists these separately so they are not mistaken for "never streamed".
+- **A glowing chest still has to be drawn to be seen.** The tint colours the chest's own
+  geometry, so a roof in front of it, distance culling, or the ~70–75 m streaming limit will all
+  hide it regardless. See "You cannot spot them through a roof" above.
+- **Not every container is tintable.** Containers are drawn three different ways and each route
+  reaches one of them; widen `ChestNameContains` and some will light up while others do not. F10
+  shows `children=N/M` and the log names the route that reached each one.
 - **`Marshal.SizeOf` must match the component's real chunk size.** The plugin verifies this at
   runtime against `il2cpp_class_value_size` and disables its writes if they ever disagree, which
   is what stops a regenerated interop set from silently corrupting adjacent component data. A
