@@ -1,6 +1,6 @@
 # VRVisionBoost
 
-A BepInEx 6 (IL2CPP) client plugin for V Rising that does two independent things:
+A BepInEx 6 (IL2CPP) client plugin for V Rising that does three independent things:
 
 1. **Keeps units visible further away.** Mobs, VBloods and critters normally wink out at the
    edge of the game's fog of war. This pushes that cutoff back so they stay drawn out to roughly
@@ -8,9 +8,12 @@ A BepInEx 6 (IL2CPP) client plugin for V Rising that does two independent things
 2. **Tints units by blood quality.** A 100 % feed target glows magenta, anything from 90 % up
    glows green, so you can pick the good one out of a cell block at a glance instead of clicking
    through each prisoner.
+3. **Clears the fog and clouds in bat form.** Flying is normally a view of grey soup; this
+   switches off the game's own `BatFormFog` screen effect and, optionally, the cloud cover
+   underneath it, so you can see the ground you are flying over.
 
-The two features are separate and separately toggled. Neither synthesizes input: the plugin only
-reads and writes ECS component data, and reads key state.
+The three features are separate and separately toggled. None synthesizes input: the plugin only
+reads and writes ECS component and render state, and reads key state.
 
 ## The one limit you cannot tune away
 
@@ -19,6 +22,9 @@ is decided server-side — the `SyncToUser` bitmask machinery, `ProjectM.Network
 `UserActivityGridSystem`, `CalculateRelevantAabbs` — in a **separate process**,
 `VRising_Server\VRisingServer.exe`, even when you "play solo". A client-side plugin cannot reach
 into it.
+
+This limit applies to the vision half only. The blood glow and the bat form fog work regardless
+of what the server streams.
 
 In practice that ceiling is generous for units: they arrive with the world chunks and stay
 available past 90 m, which is well beyond the ~40 m the game draws them at. That gap is exactly
@@ -46,8 +52,9 @@ the project targets `net6.0` to match the CoreCLR runtime the game loads).
 This is the quickest route and needs no .NET SDK — only BepInEx.
 
 1. **Get the DLL.** Either download `VRVisionBoost.dll` from the
-   [Releases](../../releases) page, or take the copy committed at
-   [`dist/VRVisionBoost.dll`](dist/VRVisionBoost.dll) in this repo. They are the same file.
+   [latest release](https://github.com/danyalmeidakairouz/VRVisionBoost/releases/latest), or take
+   the copy committed at [`dist/VRVisionBoost.dll`](dist/VRVisionBoost.dll) in this repo. They are
+   the same file.
 2. **Drop it in.** Copy it into `<game>\BepInEx\plugins\`, so you end up with
    `...\VRising\BepInEx\plugins\VRVisionBoost.dll`. No subfolder — BepInEx does not recurse by
    default.
@@ -63,14 +70,15 @@ This is the quickest route and needs no .NET SDK — only BepInEx.
 4. **Confirm it loaded.** Open `BepInEx/LogOutput.log` and look for:
 
    ```
-   [Info   :   BepInEx] Loading [VRVisionBoost 0.1.0]
-   [Info   :VRVisionBoost] Hotkeys - vision: F6  glow: F7  dump: F10  reload: F11
+   [Info   :   BepInEx] Loading [VRVisionBoost 1.0.2]
+   [Info   :VRVisionBoost] Hotkeys - vision: F6  glow: F7  batfog: F8  dump: F10  reload: F11
    ```
 
    If those lines are missing, the DLL is in the wrong folder or BepInEx is not the IL2CPP
    build — see **Prerequisites** above.
-5. **Turn it on.** The plugin starts **inactive** unless `Enabled = true` in the config; press
-   **F6** in game for the vision boost and **F7** for the glow.
+5. **Turn it on.** The plugin starts **inactive** unless `Enabled = true` in the config. **F6 is
+   the master switch** — nothing works until it is on. Then **F7** adds the blood glow and **F8**
+   clears the bat form fog.
 
 To configure it, edit the generated `.cfg` and press **F11** in game — no restart needed. For a
 tuned starting point instead of bare defaults, see **Example config** below.
@@ -136,15 +144,16 @@ the two ever disagree, `Settings.cs` is right.
 
 | Key | Does |
 |-----|------|
-| **F6** | Toggle the vision boost on/off — also **undoes** everything it wrote, including the model range |
-| **F7** | Toggle the blood glow on/off, independently of F6. Saves the new state, so it survives a restart |
+| **F6** | **Master switch.** Toggles the whole plugin on/off — vision, blood glow and bat form fog together — and **undoes** everything all three wrote. The other keys do nothing while this is off |
+| **F7** | Toggle the blood glow on/off, independently of the other features. Saves the new state, so it survives a restart. Requires F6 to be on |
+| **F8** | Toggle the bat form fog removal on/off, independently of the other features. Saves the new state, so it survives a restart. Requires F6 to be on |
 | **F10** | Dump every unit the client knows about: distance, hide state, blood quality, whether the glow selected it. Also prints the full component list — and a glow diagnosis — for anything within `DumpComponentsRange` |
 | **F11** | Reload the config file |
 
 > **Check for hotkey collisions.** A plugin cannot see another plugin's bindings, so if something
 > else you have installed uses the same key, one press triggers both. Rebind whichever is easier.
 
-All four are configurable, but **single keys only** — `F1`-`F24`, `A`-`Z`, `0`-`9`, `Space`,
+All five are configurable, but **single keys only** — `F1`-`F24`, `A`-`Z`, `0`-`9`, `Space`,
 `Insert`, `Numpad0`-`Numpad9` and similar. Modifier combinations like `Ctrl+F6` are not
 supported; if you configure one the plugin warns in the log and falls back to the default. The
 log always names the key that was actually bound. Hotkeys are ignored unless the V Rising window
@@ -237,6 +246,39 @@ Standing within `DumpComponentsRange` of a unit and pressing **F10** adds a per-
 naming its model entity, its `ModelType`, which lookup key resolved it, each renderer's shader,
 and whether that shader actually declares the colour property being written.
 
+## Bat form fog
+
+Press **F8** in flight. Two separate things make bat form look like grey soup, and the plugin
+treats them separately because one of them is not really a bat form setting at all:
+
+| What | Setting | Scope |
+|------|---------|-------|
+| `BatFormFog`, a full-screen effect the game ships for exactly this purpose | `BatFogEnabled` | bat form only |
+| `DayNightCycle.Cloudiness` — real cloud cover, with ground shadows, normally `0.65` | `ZeroCloudiness` | **the whole world, all the time** |
+
+Removing only the first leaves clouds still drifting below you, which is why `ZeroCloudiness`
+defaults to on. But be clear about what it does: it is **global weather**, so while the toggle is
+on the sky is clear everywhere, not just while you are flying. Set it to `false` to keep the
+weather untouched and strip only the screen effect. Both are restored when you toggle off, when
+you switch the setting off mid-session, and on shutdown.
+
+**If nothing happens the first time**, look in the log. The game may not create the effect until
+you have entered bat form once, and the plugin says so explicitly rather than failing quietly:
+
+```
+Bat form fog is ON but no BatFormFog effect was found yet - the game may not create it
+until you first enter bat form. Shapeshift once, then check this log again.
+```
+
+Shapeshift, and it should pick it up within two seconds. Once it has, the log names how many
+instances it found and how it found them.
+
+**Prior art.** [RetroCamera](https://thunderstore.io/c/v-rising/p/zfolmt/RetroCamera/) has done
+this for a while and does it well; if you also want its camera changes, use it instead — this is
+not an attempt to replace it. The implementation here is independent and deliberately narrower:
+it switches the effect off through its `active` flag rather than destroying the material, and it
+does not touch the camera at all.
+
 ## How it works
 
 The plugin writes the *inputs* of the game's own visibility system rather than fighting its
@@ -279,3 +321,14 @@ rising `lastSeen` and an empty `model=`. The dump reports both, so you can check
   is what stops a regenerated interop set from silently corrupting adjacent component data. A
   failed check is logged loudly; writes being disabled is never silent.
 
+## Links
+
+- **Repository:** <https://github.com/danyalmeidakairouz/VRVisionBoost>
+- **Releases:** <https://github.com/danyalmeidakairouz/VRVisionBoost/releases>
+- **Issues:** <https://github.com/danyalmeidakairouz/VRVisionBoost/issues> — include the relevant
+  lines from `BepInEx/LogOutput.log` and your `vrvisionboost.cfg`; the log names what the plugin
+  actually found and is usually enough to diagnose a problem without a back-and-forth.
+
+Bat form fog removal is independent of [RetroCamera](https://thunderstore.io/c/v-rising/p/zfolmt/RetroCamera/),
+which also offers a fog toggle alongside its camera changes. Use whichever suits you; there is no
+need for both.

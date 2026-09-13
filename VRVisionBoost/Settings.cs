@@ -44,6 +44,13 @@ namespace VRVisionBoost
         public ConfigEntry<string> GlowMode;
         public ConfigEntry<string> GlowRendererProperty;
 
+        public ConfigEntry<bool> BatFogEnabled;
+        public ConfigEntry<string> BatFogKey;
+        public ConfigEntry<bool> ZeroCloudiness;
+        public ConfigEntry<bool> DisableSkyClouds;
+        public ConfigEntry<string> BatFogTargets;
+        public ConfigEntry<bool> DestroyFogMaterial;
+
         public Settings(ConfigFile cfg)
         {
             Enabled = cfg.Bind("1. General", "Enabled", false,
@@ -103,6 +110,19 @@ namespace VRVisionBoost
                 "Also read quality from ProjectM.Blood.Quality for units that carry no BloodConsumeSource. Servants and some castle units have the one but not the other, so with this off they can never glow whatever their quality. Turn it off if it makes too many things glow.");
             GlowQualityScale = cfg.Bind("4. Blood glow", "GlowQualityScale", "Auto",
                 "How to read BloodConsumeSource.BloodQuality: Auto, Fraction (0-1) or Percent (0-100). Auto treats anything at or below 1 as a fraction, which is ambiguous for exactly one value - a raw 1.0 is either 1% or 100%. Press the dump key, read the bloodQ= field, then pin this.");
+
+            BatFogEnabled = cfg.Bind("5. Bat form fog", "BatFogEnabled", false,
+                "Remove the fog and clouds that close in around you in bat form. The game draws these with a dedicated full-screen effect called BatFormFog, and this switches that effect off. Independent of the vision boost and the glow, and toggled separately with BatFogKey. Off by default - turn it on in game and look down from altitude to judge it.");
+            BatFogKey = cfg.Bind("5. Bat form fog", "BatFogKey", "F8",
+                "Key that toggles the bat form fog removal on/off. Flips BatFogEnabled and saves it, so the choice survives a restart. Leave empty to disable.");
+            ZeroCloudiness = cfg.Bind("5. Bat form fog", "ZeroCloudiness", true,
+                "Also drive the world's cloud cover to zero while the fog removal is active (DayNightCycle.Cloudiness, normally 0.65). The screen effect above is only half of what you see in bat form - the rest is actual cloud cover with its own ground shadows, and leaving it alone means clouds still drift below you. This is GLOBAL weather, not a bat form setting: it changes the sky everywhere for as long as the toggle is on, and is restored when you switch it off. Set false to keep the weather untouched and remove only the screen fog.");
+            DisableSkyClouds = cfg.Bind("5. Bat form fog", "DisableSkyClouds", true,
+                "Also switch off the sky's own cloud layers - HDRP's VolumetricClouds and CloudLayer, which are a third thing again, separate from both the bat form screen effect and ZeroCloudiness above. Measured in game: with the first two off, clouds were still drawing, and these are what was left. Like ZeroCloudiness this is GLOBAL and restored on toggle-off. Set false if the sky ends up looking too empty.");
+            BatFogTargets = cfg.Bind("5. Bat form fog", "BatFogTargets", "BatFormFog,StunlockFogVolumeComponent",
+                "Which volume components to switch off, by type name, comma separated. This is a list rather than fixed code because V Rising does NOT use Unity's stock cloud system - the scene's 'Scene PostProcess' volume carries Stunlock's own StunlockSky and StunlockFogVolumeComponent instead of VolumetricClouds and CloudLayer, so the right target had to be found by looking rather than guessing. Names are matched against the component's type name, case-insensitively. Press the reload key after editing - no rebuild needed. Candidates seen in game: BatFormFog, StunlockFogVolumeComponent, StunlockSky, ExponentialFog, VolumetricFog, Fog, VolumetricClouds, CloudLayer, PhysicallyBasedSky, GradientSky, HDRISky. Add StunlockSky if clouds are still drawing, but expect it to change the whole sky, not just the clouds. Everything listed is restored on toggle-off.");
+            DestroyFogMaterial = cfg.Bind("5. Bat form fog", "DestroyFogMaterial", true,
+                "Destroy the BatFormFog effect's material instead of only switching the component off. Measured in game: setting the component inactive and zeroing its intensity left the fog drawing, and destroying the material is what actually stops it - this is also what the RetroCamera mod does, which is the only known working implementation. The material is copied before it is destroyed and rebuilt from that copy on toggle-off. Set false to use only the inactive/intensity route, which is gentler but did not work here.");
         }
     }
 }

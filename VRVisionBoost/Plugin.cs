@@ -14,7 +14,7 @@ namespace VRVisionBoost
         // The GUID determines the config filename. Changing it orphans the existing config.
         public const string GUID = "vrvisionboost";
         public const string NAME = "VRVisionBoost";
-        public const string VERSION = "0.1.0";
+        public const string VERSION = "1.0.2";
 
         internal static ManualLogSource Logger;
         internal static Settings Cfg;
@@ -39,14 +39,16 @@ namespace VRVisionBoost
         private Hotkeys _keys;
         private VisionBooster _vision;
         private BloodGlow _glow;
+        private BatFog _batFog;
         private float _nextTick;
-        private int _toggleKey, _dumpKey, _reloadKey, _glowKey;
+        private int _toggleKey, _dumpKey, _reloadKey, _glowKey, _batFogKey;
 
         void Awake()
         {
             _keys = new Hotkeys();
             _vision = new VisionBooster(Plugin.Cfg, Plugin.Logger);
             _glow = new BloodGlow(Plugin.Cfg, Plugin.Logger);
+            _batFog = new BatFog(Plugin.Cfg, Plugin.Logger);
             _vision.Glow = _glow;   // so the dump can say why a unit is or is not glowing
             ParseHotkeys();
         }
@@ -74,20 +76,33 @@ namespace VRVisionBoost
                 Plugin.Logger.LogWarning($"GlowToggleKey '{glowCfg}' is not a key name this plugin "
                                        + "understands - the glow hotkey is disabled.");
 
+            // The bat fog key may legitimately be unbound too.
+            string batFogCfg = Plugin.Cfg.BatFogKey.Value;
+            _batFogKey = Hotkeys.Parse(batFogCfg);
+            string batFog = _batFogKey != 0 ? batFogCfg.Trim() : "(none)";
+            if (_batFogKey == 0 && !string.IsNullOrWhiteSpace(batFogCfg))
+                Plugin.Logger.LogWarning($"BatFogKey '{batFogCfg}' is not a key name this plugin "
+                                       + "understands - the bat fog hotkey is disabled.");
+
             // Two actions on one key silently means only the first ever fires: WasPressed
             // consumes the up-to-down edge for that key, so the second call sees it already down.
+            // Five keys means ten pairs - add the new row if a sixth is ever introduced.
             WarnIfShared(_toggleKey, toggle, "toggle", _dumpKey, dump, "dump");
             WarnIfShared(_toggleKey, toggle, "toggle", _reloadKey, reload, "reload");
             WarnIfShared(_dumpKey, dump, "dump", _reloadKey, reload, "reload");
             WarnIfShared(_toggleKey, toggle, "toggle", _glowKey, glow, "glow toggle");
             WarnIfShared(_dumpKey, dump, "dump", _glowKey, glow, "glow toggle");
             WarnIfShared(_reloadKey, reload, "reload", _glowKey, glow, "glow toggle");
+            WarnIfShared(_toggleKey, toggle, "toggle", _batFogKey, batFog, "bat fog toggle");
+            WarnIfShared(_dumpKey, dump, "dump", _batFogKey, batFog, "bat fog toggle");
+            WarnIfShared(_reloadKey, reload, "reload", _batFogKey, batFog, "bat fog toggle");
+            WarnIfShared(_glowKey, glow, "glow toggle", _batFogKey, batFog, "bat fog toggle");
 
             // Report what is actually bound, never what was merely configured: the log is the
             // only feedback channel, so echoing an unparseable string back would send someone
             // hunting for a broken hotkey that is in fact bound to the default.
-            Plugin.Logger.LogInfo($"Hotkeys - vision: {toggle}  glow: {glow}  dump: {dump}  "
-                                + $"reload: {reload}");
+            Plugin.Logger.LogInfo($"Hotkeys - vision: {toggle}  glow: {glow}  batfog: {batFog}  "
+                                + $"dump: {dump}  reload: {reload}");
         }
 
         private static void WarnIfShared(int vkA, string nameA, string labelA,
@@ -122,7 +137,16 @@ namespace VRVisionBoost
 
             if (_keys.WasPressed(_toggleKey))
             {
-                Plugin.Logger.LogInfo($"Vision boost {(_vision.Toggle() ? "ON" : "OFF")}");
+                // Master switch: this turns the whole plugin off, not just the vision half.
+                // Each feature owns undoing its own writes, so all three are told explicitly -
+                // skipping their Update() alone would strand whatever they had already applied.
+                bool on = _vision.Toggle();
+                if (!on)
+                {
+                    try { _glow.Reset(); } catch { }
+                    try { _batFog.Revert(); } catch { }
+                }
+                Plugin.Logger.LogInfo($"VRVisionBoost {(on ? "ON" : "OFF")} - all features");
                 _nextTick = 0f; // apply immediately rather than waiting out the interval
             }
             if (_keys.WasPressed(_glowKey))
@@ -132,7 +156,17 @@ namespace VRVisionBoost
                 // nothing else has to be undone here.
                 bool on = !Plugin.Cfg.GlowEnabled.Value;
                 Plugin.Cfg.GlowEnabled.Value = on;
-                Plugin.Logger.LogInfo($"Blood glow {(on ? "ON" : "OFF")}");
+                Plugin.Logger.LogInfo($"Blood glow {(on ? "ON" : "OFF")}"
+                                    + (_vision.Active ? "" : " (nothing will happen until the master toggle is on)"));
+            }
+            if (_keys.WasPressed(_batFogKey))
+            {
+                // Same shape as the glow toggle: persist the choice, and let BatFog notice the
+                // setting changed on its next frame and revert itself. Nothing to undo here.
+                bool on = !Plugin.Cfg.BatFogEnabled.Value;
+                Plugin.Cfg.BatFogEnabled.Value = on;
+                Plugin.Logger.LogInfo($"Bat form fog removal {(on ? "ON" : "OFF")}"
+                                    + (_vision.Active ? "" : " (nothing will happen until the master toggle is on)"));
             }
             if (_keys.WasPressed(_dumpKey))
             {
@@ -154,8 +188,17 @@ namespace VRVisionBoost
 
             // Deliberately outside the interval gate below: the game drains its material
             // change list every frame, so a tint emitted at 10Hz would strobe.
-            try { _glow.Update(); }
-            catch (Exception e) { Plugin.Logger.LogError($"Blood glow error: {Describe(e)}"); }
+            // Gated on the master switch, and deliberately outside the interval gate below: the
+            // game drains its material change list every frame and HDRP re-blends its volume
+            // stack every frame, so a value written at 10Hz would strobe or be blended back.
+            if (_vision.Active)
+            {
+                try { _glow.Update(); }
+                catch (Exception e) { Plugin.Logger.LogError($"Blood glow error: {Describe(e)}"); }
+
+                try { _batFog.Update(); }
+                catch (Exception e) { Plugin.Logger.LogError($"Bat fog error: {Describe(e)}"); }
+            }
 
             float now = Time.unscaledTime;
             if (now < _nextTick) return;
@@ -190,6 +233,7 @@ namespace VRVisionBoost
         void OnDestroy()
         {
             try { _glow?.Reset(); } catch { }
+            try { _batFog?.Reset(); } catch { }
             try { _vision?.Revert(); }
             catch (Exception e) { Plugin.Logger.LogError($"Revert on shutdown failed: {e.Message}"); }
         }
